@@ -205,6 +205,7 @@ def fast_import_tables(
     # Advanced use - used by kart upgrade.
     header=None,
     extra_cmd_args=(),
+    path_encoder=None
 ):
     """
     Imports all of the given sources as new datasets, and commit the result.
@@ -299,6 +300,7 @@ def fast_import_tables(
                     replace_ids,
                     limit,
                     verbosity,
+                    path_encoder
                 )
 
         if import_ref is not None:
@@ -334,6 +336,7 @@ def _import_single_source(
     replace_ids,
     limit,
     verbosity,
+    path_encoder
 ):
     """
     repo - the Kart repo to import into.
@@ -367,6 +370,9 @@ def _import_single_source(
     dataset = dataset_class.new_dataset_for_writing(
         source.dest_path, source.schema, repo
     )
+
+    if path_encoder is not None:
+        dataset.default_path_encoder = path_encoder
 
     with source:
         if limit:

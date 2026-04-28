@@ -1,3 +1,4 @@
+from kart.tabular.v3_paths import PathEncoder
 from pathlib import Path
 
 import click
@@ -175,6 +176,23 @@ def any_at_all(iterable):
     help="The dataset's path once imported",
     hidden=True,
 )
+@click.option(
+    "--path-encoding",
+    "path_encoding",
+    help="The encoding to use for table paths",
+)
+@click.option(
+    "--path-levels",
+    "path_levels",
+    type=click.INT,
+    help="Number of levels of directory names to create (each level is two characters long).",
+)
+@click.option(
+    "--path-branches",
+    "path_branches",
+    type=click.INT,
+    help="Number of branches to create at each level.",
+)
 @click.argument(
     "args",
     nargs=-1,
@@ -197,6 +215,9 @@ def table_import(
     do_checkout,
     num_workers,
     ds_path,
+    path_encoding,
+    path_levels,
+    path_branches,
     args,
 ):
     """
@@ -227,6 +248,7 @@ def table_import(
     source = args[0]
     tables = args[1:]
 
+
     if output_format == "json" and not do_list:
         raise click.UsageError(
             "Illegal usage: '--output-format=json' only supports --list"
@@ -238,6 +260,14 @@ def table_import(
     repo = ctx.obj.repo
     check_git_user(repo)
     check_for_import_from_within_working_copy(repo, source, tables)
+
+    path_encoder = None
+    if path_encoding is not None or path_levels is not None or path_branches is not None:
+        if repo.table_dataset_version < 3:
+            raise click.UsageError("Illegal usage: --path-* options are only supported for V3 datasets")
+        base_encoder = PathEncoder.GENERAL_ENCODER
+        path_encoder = PathEncoder.get(scheme=base_encoder.scheme, levels=path_levels or base_encoder.levels, encoding= path_encoding or base_encoder.encoding, branches=path_branches or base_encoder.branches)
+
 
     base_import_source = TableImportSource.open(source)
     if all_tables:
@@ -346,6 +376,7 @@ def table_import(
         from_commit=repo.head_commit,
         replace_ids=replace_ids,
         allow_empty=allow_empty,
+        path_encoder=path_encoder
     )
 
     # During imports we can keep old changes since they won't conflict with newly imported datasets.

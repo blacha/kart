@@ -1,7 +1,7 @@
 import functools
 import os
 import re
-from typing import ClassVar
+from typing import ClassVar, Optional
 import pygit2
 
 from kart.core import all_blobs_in_tree
@@ -183,13 +183,18 @@ class TableV3(RichTableDataset):
             return
         yield from all_blobs_in_tree(self.inner_tree / self.FEATURE_PATH)
 
+    # Allow the path encoder to be configured for imports
+    default_path_encoder:Optional[PathEncoder] = None
+
     @property
     @functools.lru_cache(maxsize=1)
     def feature_path_encoder(self):
         if not self.inner_tree and self.schema is not None:
+            if self.default_path_encoder is not None:
+                return self.default_path_encoder
             # No meta tree; we must be still creating this dataset.
             # Figure out a sensible path encoder to use:
-            return self.feature_path_encoder_for_schema(self.schema)
+            self.default_path_encoder = self.feature_path_encoder_for_schema(self.schema)
         # Otherwise, load the path-structure meta-item.
         path_structure = self.get_meta_item("path-structure.json", missing_ok=True)
         if path_structure is not None:
@@ -202,6 +207,8 @@ class TableV3(RichTableDataset):
         return self.feature_path_encoder_for_schema(Schema(schema_delta.new_value))
 
     def feature_path_encoder_for_schema(self, schema):
+        if self.default_path_encoder is not None:
+            return self.default_path_encoder
         if schema is None:
             return self.feature_path_encoder
         pks = schema.pk_columns
@@ -276,6 +283,7 @@ class TableV3(RichTableDataset):
         # The path encoder is not a meta-item of the source, since it is only a property
         # of how we are importing the data into this dataset. But it must also be written.
         path_encoder = self.feature_path_encoder
+        print("write-encoder", path_encoder)
         if path_encoder is not PathEncoder.LEGACY_ENCODER:
             meta_items["path-structure.json"] = path_encoder.to_dict()
 

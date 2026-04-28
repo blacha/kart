@@ -65,7 +65,8 @@ class Context(object):
         if not hasattr(self, "_repo"):
             try:
                 self._repo = KartRepo(self.repo_path)
-            except NotFound:
+            except NotFound as e:
+                print(e)
                 if self.user_repo_path:
                     message = "Not an existing Kart repository"
                     param_hint = "--repo"
