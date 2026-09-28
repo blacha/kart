@@ -943,7 +943,9 @@ def test_pk_encoder_partial_overrides():
     assert e.encoding == "base64"
     assert e.branches == 64
     assert e.levels == 2
-    assert ds.encode_1pk_to_path("Dave") == "mytable/.table-dataset/feature/s/v/kaREYXZl"
+    assert (
+        ds.encode_1pk_to_path("Dave") == "mytable/.table-dataset/feature/s/v/kaREYXZl"
+    )
 
 
 @pytest.mark.parametrize("overrides", [None, {}, {"levels": None}])

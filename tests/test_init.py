@@ -9,6 +9,7 @@ from kart.sqlalchemy.gpkg import Db_GPKG
 from kart.repo import KartRepo
 from kart.exceptions import (
     INVALID_OPERATION,
+    NO_CHANGES,
     NO_IMPORT_SOURCE,
     NO_TABLE,
     WORKING_COPY_OR_IMPORT_CONFLICT,
@@ -1226,6 +1227,30 @@ def test_import_path_structure_replace_existing(
             )
             assert r.exit_code == 0, r.stderr
 
+            paths = _feature_paths(KartRepo(repo_path), "mytable")
+            assert len(paths) > 0
+            assert all(re.fullmatch(r"([^/]/){2}[^/]+", p) for p in paths)
+
+            # Re-importing the same data is a no-op. If the path structure was reset to the
+            # default instead of being inherited, every feature would move to a new path.
+            r = cli_runner.invoke(
+                [
+                    "import",
+                    "--replace-existing",
+                    data / "nz-waca-adjustments.gpkg",
+                    "nz_waca_adjustments:mytable",
+                ]
+            )
+            assert r.exit_code == NO_CHANGES, r.stderr
+            assert "No changes to commit" in r.stderr
+
+            # Re-importing changed data keeps the structure too.
+            with Db_GPKG.create_engine(data / "nz-waca-adjustments.gpkg").connect() as (
+                conn
+            ):
+                conn.execute(
+                    "UPDATE nz_waca_adjustments SET survey_reference = 'edited' WHERE id = 1424927"
+                )
             r = cli_runner.invoke(
                 [
                     "import",
@@ -1241,13 +1266,20 @@ def test_import_path_structure_replace_existing(
             )
             assert r.exit_code == 0, r.stderr
             assert json.loads(r.stdout)["mytable"]["path-structure.json"]["levels"] == 2
+            assert all(
+                re.fullmatch(r"([^/]/){2}[^/]+", p)
+                for p in _feature_paths(KartRepo(repo_path), "mytable")
+            )
 
 
 @pytest.mark.parametrize(
     "args,message",
     [
         (["--path-branches=256"], "must be one of: 64, 4096"),
-        (["--path-encoding=hex", "--path-branches=64"], "must be one of: 16, 256, 4096"),
+        (
+            ["--path-encoding=hex", "--path-branches=64"],
+            "must be one of: 16, 256, 4096",
+        ),
         (["--path-levels=0"], "must be at least 1"),
         (["--path-encoding=octal"], "Invalid value for '--path-encoding'"),
     ],
