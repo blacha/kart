@@ -1084,6 +1084,194 @@ def test_import_existing_wc(
         ]
 
 
+def _feature_paths(repo, ds_path):
+    """Returns all feature paths in the given dataset, relative to the feature tree."""
+    feature_tree = repo.head_tree / f"{ds_path}/.table-dataset/feature"
+
+    def _walk(tree, prefix):
+        for obj in tree:
+            path = f"{prefix}{obj.name}"
+            if obj.type_str == "tree":
+                yield from _walk(obj, f"{path}/")
+            else:
+                yield path
+
+    return list(_walk(feature_tree, ""))
+
+
+def test_import_path_structure(data_archive, tmp_path, cli_runner, chdir):
+    """Import with a non-default path structure, then check it is used and is stuck to."""
+    with data_archive("gpkg-stringpk") as data:
+        repo_path = tmp_path / "emptydir"
+        r = cli_runner.invoke(["init", repo_path])
+        assert r.exit_code == 0, r.stderr
+        with chdir(repo_path):
+            r = cli_runner.invoke(
+                [
+                    "import",
+                    data / "stringpk.gpkg",
+                    "stringpk:mytable",
+                    "--path-encoding=hex",
+                    "--path-levels=1",
+                    "--path-branches=256",
+                ]
+            )
+            assert r.exit_code == 0, r.stderr
+
+            r = cli_runner.invoke(
+                ["meta", "get", "mytable", "path-structure.json", "-o", "json"]
+            )
+            assert r.exit_code == 0, r.stderr
+            assert json.loads(r.stdout)["mytable"]["path-structure.json"] == {
+                "scheme": "msgpack/hash",
+                "encoding": "hex",
+                "levels": 1,
+                "branches": 256,
+            }
+
+            repo = KartRepo(repo_path)
+            paths = _feature_paths(repo, "mytable")
+            assert len(paths) > 0
+            # One level of two-character hex trees.
+            assert all(re.fullmatch(r"[0-9a-f]{2}/[^/]+", p) for p in paths)
+
+            # Editing the dataset - including changing its schema, which rewrites
+            # path-structure.json - keeps using the structure it was imported with.
+            table_wc = repo.working_copy.tabular
+            with table_wc.session() as sess:
+                sess.execute("UPDATE mytable SET age = age + 1 WHERE name = 'bob';")
+                sess.execute("ALTER TABLE mytable ADD COLUMN nickname TEXT;")
+            r = cli_runner.invoke(["commit", "-m", "edit"])
+            assert r.exit_code == 0, r.stderr
+
+            r = cli_runner.invoke(["show", "-o", "json"])
+            assert r.exit_code == 0, r.stderr
+            diff = json.loads(r.stdout)["kart.diff/v1+hexwkb"]
+            assert "schema.json" in diff["mytable"]["meta"]
+
+            r = cli_runner.invoke(
+                ["meta", "get", "mytable", "path-structure.json", "-o", "json"]
+            )
+            assert r.exit_code == 0, r.stderr
+            assert json.loads(r.stdout)["mytable"]["path-structure.json"] == {
+                "scheme": "msgpack/hash",
+                "encoding": "hex",
+                "levels": 1,
+                "branches": 256,
+            }
+            assert all(
+                re.fullmatch(r"[0-9a-f]{2}/[^/]+", p)
+                for p in _feature_paths(KartRepo(repo_path), "mytable")
+            )
+
+
+def test_import_path_structure_int_pk(data_archive, tmp_path, cli_runner, chdir):
+    """The scheme is still chosen from the PK type - only the other parameters are overridden."""
+    with data_archive("gpkg-points") as data:
+        repo_path = tmp_path / "emptydir"
+        r = cli_runner.invoke(["init", repo_path])
+        assert r.exit_code == 0, r.stderr
+        with chdir(repo_path):
+            # Creating the working copy looks up the highest assigned PK, which means walking
+            # the (two-character) trees - a regression test for that search.
+            r = cli_runner.invoke(
+                [
+                    "import",
+                    data / "nz-pa-points-topo-150k.gpkg",
+                    f"{H.POINTS.LAYER}:mytable",
+                    "--path-encoding=hex",
+                    "--path-branches=256",
+                ]
+            )
+            assert r.exit_code == 0, r.stderr
+
+            r = cli_runner.invoke(
+                ["meta", "get", "mytable", "path-structure.json", "-o", "json"]
+            )
+            assert r.exit_code == 0, r.stderr
+            assert json.loads(r.stdout)["mytable"]["path-structure.json"] == {
+                "scheme": "int",
+                "encoding": "hex",
+                "levels": 4,
+                "branches": 256,
+            }
+
+            paths = _feature_paths(KartRepo(repo_path), "mytable")
+            assert len(paths) == H.POINTS.ROWCOUNT
+            assert all(
+                re.fullmatch(r"([0-9a-f]{2}/){4}[^/]+", p) for p in paths
+            ), paths[0]
+
+            r = cli_runner.invoke(["status"])
+            assert r.exit_code == 0, r.stderr
+            assert r.stdout.splitlines()[-1] == "Nothing to commit, working copy clean"
+
+
+def test_import_path_structure_replace_existing(
+    data_archive, tmp_path, cli_runner, chdir
+):
+    """A --replace-existing import keeps the path structure the dataset already has."""
+    with data_archive("gpkg-polygons") as data:
+        repo_path = tmp_path / "emptydir"
+        r = cli_runner.invoke(["init", repo_path])
+        assert r.exit_code == 0, r.stderr
+        with chdir(repo_path):
+            r = cli_runner.invoke(
+                [
+                    "import",
+                    data / "nz-waca-adjustments.gpkg",
+                    "nz_waca_adjustments:mytable",
+                    "--path-levels=2",
+                ]
+            )
+            assert r.exit_code == 0, r.stderr
+
+            r = cli_runner.invoke(
+                [
+                    "import",
+                    "--replace-existing",
+                    data / "nz-waca-adjustments.gpkg",
+                    "nz_waca_adjustments:mytable",
+                ]
+            )
+            assert r.exit_code == 0, r.stderr
+
+            r = cli_runner.invoke(
+                ["meta", "get", "mytable", "path-structure.json", "-o", "json"]
+            )
+            assert r.exit_code == 0, r.stderr
+            assert json.loads(r.stdout)["mytable"]["path-structure.json"]["levels"] == 2
+
+
+@pytest.mark.parametrize(
+    "args,message",
+    [
+        (["--path-branches=256"], "must be one of: 64, 4096"),
+        (["--path-encoding=hex", "--path-branches=64"], "must be one of: 16, 256, 4096"),
+        (["--path-levels=0"], "must be at least 1"),
+        (["--path-encoding=octal"], "Invalid value for '--path-encoding'"),
+    ],
+)
+def test_import_path_structure_invalid(
+    args, message, data_archive, tmp_path, cli_runner, chdir
+):
+    with data_archive("gpkg-polygons") as data:
+        repo_path = tmp_path / "emptydir"
+        r = cli_runner.invoke(["init", repo_path])
+        assert r.exit_code == 0, r.stderr
+        with chdir(repo_path):
+            r = cli_runner.invoke(
+                [
+                    "import",
+                    data / "nz-waca-adjustments.gpkg",
+                    "nz_waca_adjustments:mytable",
+                    *args,
+                ]
+            )
+            assert r.exit_code == 2, r.stderr
+            assert message in r.stderr
+
+
 def test_init_import_detached_head(data_working_copy, data_archive, chdir, cli_runner):
     with data_working_copy("points") as (repo_path, wcdb):
         with data_archive("gpkg-polygons") as source_path, chdir(repo_path):
